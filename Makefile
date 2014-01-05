@@ -1,5 +1,7 @@
 
 CPPFLAGS += -Icompat -D__Linux26__
+CFLAGS   += -pthread
+LDFLAGS  += -pthread
 
 C := $(wildcard *.c) $(wildcard compat/*/*.c) $(wildcard compat/*.c)
 O := $(patsubst %.c,%.o,$C)
@@ -12,8 +14,8 @@ O += compat/lib9/md/getcallerpc-$M.o
 endif
 
 
-9pfuse: $O -lfuse -lpthread
-	$(CC) $(LDFLAGS) -o $@ $^
+9pfuse: $O
+	$(CC) $(LDFLAGS) -lfuse -o $@ $^
 
 clean:
 	$(RM) 9pfuse $O
