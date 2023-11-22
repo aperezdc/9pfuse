@@ -11,6 +11,7 @@ the minimum set of needed sources from `src/lib9`, `src/libthread` and
 Building 9pfuse
 ---------------
 
-As a bonus, a ready-to-use `Makefile` that will work under recent GNU/Linux
-sustems has been included: just run `make` from the source directory.
+As a bonus, [Meson](https://mesonbuild.com)-based build system tested to work
+under recent GNU/Linux sustems has been included: just run the usual `meson
+setup build && meson compile -Cbuild` incantation from the source directory.
 
