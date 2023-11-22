@@ -150,3 +150,5 @@ executable('9pfuse',
   include_directories: include_directories('compat'),
   install: true,
 )
+
+install_man('9pfuse.4')
