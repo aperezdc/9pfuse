@@ -5,10 +5,10 @@
  * You have to put locks in all the channels and all the Alt
  * structures.  At the beginning of an alt you have to lock all
  * the channels, but then to try to actually exec an op you
- * have to lock the other guy's alt structure, so that other 
+ * have to lock the other guy's alt structure, so that other
  * people aren't trying to use him in some other op at the
  * same time.
- * 
+ *
  * For Plan 9 apps, it's just not worth the extra effort.
  */
 static QLock chanlock;
@@ -141,7 +141,7 @@ altdequeue(Alt *a)
 			delarray(ar, i);
 			return;
 		}
-	fprint(2, "cannot find self in altdq\n");
+	fprint(2, "cannot find self in altdequeue\n");
 	abort();
 }
 
@@ -397,7 +397,7 @@ chanrecvul(Channel *c)
 
 	if(_chanop(c, CHANRCV, &val, 1) > 0)
 		return val;
-	return -1;
+	return 0;
 }
 
 int
@@ -413,6 +413,5 @@ channbrecvul(Channel *c)
 
 	if(_chanop(c, CHANRCV, &val, 0) > 0)
 		return val;
-	return -1;
+	return 0;
 }
-

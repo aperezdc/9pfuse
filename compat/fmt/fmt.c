@@ -1,73 +1,104 @@
 /* Copyright (c) 2002-2006 Lucent Technologies; see LICENSE */
 #include <stdarg.h>
 #include <string.h>
+
+/*
+ * As of 2020, older systems like RHEL 6 and AIX still do not have C11 atomics.
+ * On those systems, make the code use volatile int accesses and hope for the best.
+ * (Most uses of fmtinstall are not actually racing with calls to print that lookup
+ * formats. The code used volatile here for years without too many problems,
+ * even though that's technically racy. A mutex is not OK, because we want to
+ * be able to call print from signal handlers.)
+ *
+ * RHEL is using an old GCC (atomics were added in GCC 4.9).
+ * AIX is using its own IBM compiler (XL C).
+ */
+#if __IBMC__ || !__clang__ && __GNUC__ && (__GNUC__ < 4 || (__GNUC__==4 && __GNUC_MINOR__<9))
+#warning not using C11 stdatomic on legacy system
+#define _Atomic volatile
+#define atomic_load(x) (*(x))
+#define atomic_store(x, y) (*(x)=(y))
+#define ATOMIC_VAR_INIT(x) (x)
+#else
+#include <stdatomic.h>
+#endif
+
 #include "plan9.h"
 #include "fmt.h"
 #include "fmtdef.h"
 
 enum
 {
-	Maxfmt = 64
+	Maxfmt = 128
 };
 
 typedef struct Convfmt Convfmt;
 struct Convfmt
 {
 	int	c;
-	volatile	Fmts	fmt;	/* for spin lock in fmtfmt; avoids race due to write order */
+	Fmts	fmt;
 };
 
 static struct
 {
-	/* lock by calling __fmtlock, __fmtunlock */
-	int	nfmt;
+	/*
+	 * lock updates to fmt by calling __fmtlock, __fmtunlock.
+	 * reads can start at nfmt and work backward without
+	 * further locking. later fmtinstalls take priority over earlier
+	 * ones because of the backwards loop.
+	 * once installed, a format is never overwritten.
+	 */
+	_Atomic int	nfmt;
 	Convfmt	fmt[Maxfmt];
-} fmtalloc;
-
-static Convfmt knownfmt[] = {
-	' ',	__flagfmt,
-	'#',	__flagfmt,
-	'%',	__percentfmt,
-	'\'',	__flagfmt,
-	'+',	__flagfmt,
-	',',	__flagfmt,
-	'-',	__flagfmt,
-	'C',	__runefmt,	/* Plan 9 addition */
-	'E',	__efgfmt,
-#ifndef PLAN9PORT
-	'F',	__efgfmt,	/* ANSI only */
-#endif
-	'G',	__efgfmt,
-#ifndef PLAN9PORT
-	'L',	__flagfmt,	/* ANSI only */
-#endif
-	'S',	__runesfmt,	/* Plan 9 addition */
-	'X',	__ifmt,
-	'b',	__ifmt,		/* Plan 9 addition */
-	'c',	__charfmt,
-	'd',	__ifmt,
-	'e',	__efgfmt,
-	'f',	__efgfmt,
-	'g',	__efgfmt,
-	'h',	__flagfmt,
-#ifndef PLAN9PORT
-	'i',	__ifmt,		/* ANSI only */
-#endif
-	'l',	__flagfmt,
-	'n',	__countfmt,
-	'o',	__ifmt,
-	'p',	__ifmt,
-	'r',	__errfmt,
-	's',	__strfmt,
-#ifdef PLAN9PORT
-	'u',	__flagfmt,
-#else
-	'u',	__ifmt,
-#endif
-	'x',	__ifmt,
-	0,	nil,
+} fmtalloc = {
+	#ifdef PLAN9PORT
+		ATOMIC_VAR_INIT(27),
+	#else
+		ATOMIC_VAR_INIT(30),
+	#endif
+	{
+		{' ',	__flagfmt},
+		{'#',	__flagfmt},
+		{'%',	__percentfmt},
+		{'\'',	__flagfmt},
+		{'+',	__flagfmt},
+		{',',	__flagfmt},
+		{'-',	__flagfmt},
+		{'C',	__runefmt},	/* Plan 9 addition */
+		{'E',	__efgfmt},
+	#ifndef PLAN9PORT
+		{'F',	__efgfmt},	/* ANSI only */
+	#endif
+		{'G',	__efgfmt},
+	#ifndef PLAN9PORT
+		{'L',	__flagfmt},	/* ANSI only */
+	#endif
+		{'S',	__runesfmt},	/* Plan 9 addition */
+		{'X',	__ifmt},
+		{'b',	__ifmt},		/* Plan 9 addition */
+		{'c',	__charfmt},
+		{'d',	__ifmt},
+		{'e',	__efgfmt},
+		{'f',	__efgfmt},
+		{'g',	__efgfmt},
+		{'h',	__flagfmt},
+	#ifndef PLAN9PORT
+		{'i',	__ifmt},		/* ANSI only */
+	#endif
+		{'l',	__flagfmt},
+		{'n',	__countfmt},
+		{'o',	__ifmt},
+		{'p',	__ifmt},
+		{'r',	__errfmt},
+		{'s',	__strfmt},
+	#ifdef PLAN9PORT
+		{'u',	__flagfmt},
+	#else
+		{'u',	__ifmt},
+	#endif
+		{'x',	__ifmt},
+	}
 };
-
 
 int	(*fmtdoquote)(int);
 
@@ -77,26 +108,21 @@ int	(*fmtdoquote)(int);
 static int
 __fmtinstall(int c, Fmts f)
 {
-	Convfmt *p, *ep;
+	Convfmt *p;
+	int i;
 
 	if(c<=0 || c>=65536)
 		return -1;
 	if(!f)
 		f = __badfmt;
 
-	ep = &fmtalloc.fmt[fmtalloc.nfmt];
-	for(p=fmtalloc.fmt; p<ep; p++)
-		if(p->c == c)
-			break;
-
-	if(p == &fmtalloc.fmt[Maxfmt])
+	i = atomic_load(&fmtalloc.nfmt);
+	if(i == Maxfmt)
 		return -1;
-
+	p = &fmtalloc.fmt[i];
+	p->c = c;
 	p->fmt = f;
-	if(p == ep){	/* installing a new format character */
-		fmtalloc.nfmt++;
-		p->c = c;
-	}
+	atomic_store(&fmtalloc.nfmt, i+1);
 
 	return 0;
 }
@@ -117,23 +143,10 @@ fmtfmt(int c)
 {
 	Convfmt *p, *ep;
 
-	ep = &fmtalloc.fmt[fmtalloc.nfmt];
-	for(p=fmtalloc.fmt; p<ep; p++)
-		if(p->c == c){
-			while(p->fmt == nil)	/* loop until value is updated */
-				;
+	ep = &fmtalloc.fmt[atomic_load(&fmtalloc.nfmt)];
+	for(p=ep; p-- > fmtalloc.fmt; )
+		if(p->c == c)
 			return p->fmt;
-		}
-
-	/* is this a predefined format char? */
-	__fmtlock();
-	for(p=knownfmt; p->c; p++)
-		if(p->c == c){
-			__fmtinstall(p->c, p->fmt);
-			__fmtunlock();
-			return p->fmt;
-		}
-	__fmtunlock();
 
 	return __badfmt;
 }

@@ -3,39 +3,47 @@ project('9pfuse', 'c',
   default_options: [
     'buildtype=debugoptimized',
     'b_ndebug=if-release',
-    'c_std=c99',
+    'c_std=c11',
   ],
   version: '1',
 )
 
+add_project_arguments('-DPLAN9_TARGET="@0@"'.format(get_option('prefix')), language: 'c')
+
 cc = meson.get_compiler('c')
 add_project_arguments(cc.get_supported_arguments(
     '-fcommon',
-    '-Wno-cpp',
     '-Wno-dangling-else',
     '-Wno-missing-braces',
     '-Wno-parentheses',
-    '-Wno-sizeof-array-div',
   ),
   language: 'c',
 )
 
-if target_machine.system() == 'linux'
-  add_project_arguments('-D__Linux26__=1', language: 'c')
-endif
+extra_sources = []
+getcallerpc_clang_gcc_check = '''
+#if defined(__GNUC__) || defined(__clang__) || defined(__IBMC__)
+int main(int argc, char **argv) { return (int) __builtin_return_address(0); }
+#else
+# error No built-in implementation
+#endif
+'''
 
-if target_machine.cpu_family() == 'x86_64'
-  getcallerpc_impl = 'x86_64'
-elif target_machine.cpu_family() == 'x86'
-  getcallerpc_impl = '386'
-elif target_machine.cpu_family() == 'arm'
-  # Might work on aarch64, but it was not yet tested.
-  getcallerpc_impl = 'arm'
-elif target_machine.cpu_family() == 'ppc'
-  # Might work on ppc64, but it was not yet tested.
-  getcallerpc_impl = 'power'
-else
-  error('Target architecture unsupported: @0@'.format(target_machine.cpu_family()))
+if not cc.compiles(getcallerpc_clang_gcc_check)
+  if target_machine.cpu_family() == 'x86_64'
+    getcallerpc_impl = 'x86_64'
+  elif target_machine.cpu_family() == 'x86'
+    getcallerpc_impl = '386'
+  elif target_machine.cpu_family() == 'arm'
+    # Might work on aarch64, but it was not yet tested.
+    getcallerpc_impl = 'arm'
+  elif target_machine.cpu_family() == 'ppc'
+    # Might work on ppc64, but it was not yet tested.
+    getcallerpc_impl = 'power'
+  else
+    error('Target architecture unsupported: @0@'.format(target_machine.cpu_family()))
+  endif
+  extra_sources += ['compat/lib9/md/getcallerpc-@0@.c'.format(getcallerpc_impl)]
 endif
 
 executable('9pfuse',
@@ -76,7 +84,6 @@ executable('9pfuse',
   'compat/lib9/convM2D.c',
   'compat/lib9/convM2S.c',
   'compat/lib9/convS2M.c',
-  'compat/lib9/create.c',
   'compat/lib9/dial.c',
   'compat/lib9/dirmodefmt.c',
   'compat/lib9/dup.c',
@@ -118,7 +125,6 @@ executable('9pfuse',
   'compat/lib9/tokenize.c',
   'compat/lib9/waitpid.c',
   'compat/lib9/write.c',
-  'compat/lib9/md/getcallerpc-@0@.c'.format(getcallerpc_impl),
   'compat/libmux/io.c',
   'compat/libmux/mux.c',
   'compat/libmux/queue.c',
@@ -136,6 +142,7 @@ executable('9pfuse',
   'compat/utf/utfrune.c',
   'compat/lrand.c',
   'compat/rand.c',
+  extra_sources,
   dependencies: [
     dependency('fuse'),
     dependency('threads'),

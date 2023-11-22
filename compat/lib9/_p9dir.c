@@ -34,7 +34,7 @@ static vlong
 disksize(int fd, struct stat *st)
 {
 	off_t mediasize;
-	
+
 	if(ioctl(fd, DIOCGMEDIASIZE, &mediasize) >= 0)
 		return mediasize;
 	return 0;
@@ -155,7 +155,7 @@ _p9dir(struct stat *lst, struct stat *st, char *name, Dir *d, char **str, char *
 	sz += strlen(s)+1;
 	if(d){
 		if(*str+strlen(s)+1 > estr)
-			d->uid = "oops";	
+			d->uid = "oops";
 		else{
 			strcpy(*str, s);
 			d->uid = *str;
@@ -178,7 +178,7 @@ _p9dir(struct stat *lst, struct stat *st, char *name, Dir *d, char **str, char *
 	sz += strlen(s)+1;
 	if(d){
 		if(*str + strlen(s)+1 > estr)
-			d->gid = "oops";	
+			d->gid = "oops";
 		else{
 			strcpy(*str, s);
 			d->gid = *str;
@@ -230,7 +230,7 @@ _p9dir(struct stat *lst, struct stat *st, char *name, Dir *d, char **str, char *
 			d->qid.path = ('c'<<16)|st->st_rdev;
 		}
 		/* fetch real size for disks */
-		if(S_ISBLK(lst->st_mode) || S_ISCHR(lst->st_mode)){
+		if(S_ISBLK(lst->st_mode)){
 			if((fd = open(name, O_RDONLY)) >= 0){
 				d->length = disksize(fd, st);
 				close(fd);
@@ -240,4 +240,3 @@ _p9dir(struct stat *lst, struct stat *st, char *name, Dir *d, char **str, char *
 
 	return sz;
 }
-

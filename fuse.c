@@ -15,7 +15,7 @@ allocfusemsg(void)
 {
 	FuseMsg *m;
 	void *vbuf;
-	
+
 	lock(&fusemsglock);
 	if((m = fusemsglist) != nil){
 		fusemsglist = m->next;
@@ -46,9 +46,8 @@ readfusemsg(void)
 {
 	FuseMsg *m;
 	int n, nn;
-	
+
 	m = allocfusemsg();
-	errno = 0;
 	/*
 	 * The FUSE kernel device apparently guarantees
 	 * that this read will return exactly one message.
@@ -57,7 +56,11 @@ readfusemsg(void)
 	 * FUSE returns an ENODEV error, not EOF,
 	 * when the connection is unmounted.
 	 */
-	if((n = read(fusefd, m->buf, fusebufsize)) < 0){
+	do{
+		errno = 0;
+		n = read(fusefd, m->buf, fusebufsize);
+	}while(n < 0 && errno == EINTR);
+	if(n < 0){
 		if(errno != ENODEV)
 			sysfatal("readfusemsg: %r");
 	}
@@ -81,7 +84,7 @@ readfusemsg(void)
 		sysfatal("readfusemsg: got %d wanted %d",
 			n, m->hdr->len);
 	m->hdr->len -= sizeof(*m->hdr);
-	
+
 	/*
 	 * Paranoia.
 	 * Make sure lengths are long enough.
@@ -122,7 +125,7 @@ readfusemsg(void)
 		if(((char*)m->tx)[m->hdr->len-1] != 0
 		|| memchr(m->tx, 0, m->hdr->len-1) == 0)
 			goto bad;
-		break;	
+		break;
 	case FUSE_MKNOD:
 		if(m->hdr->len <= sizeof(struct fuse_mknod_in)
 		|| ((char*)m->tx)[m->hdr->len-1] != 0)
@@ -216,7 +219,7 @@ readfusemsg(void)
 }
 
 /*
- * Reply to FUSE request m using additonal 
+ * Reply to FUSE request m using additonal
  * argument buffer arg of size narg bytes.
  * Perhaps should free the FuseMsg here?
  */
@@ -226,7 +229,7 @@ replyfuse(FuseMsg *m, void *arg, int narg)
 	struct iovec vec[2];
 	struct fuse_out_header hdr;
 	int nvec;
-	
+
 	hdr.len = sizeof hdr + narg;
 	hdr.error = 0;
 	hdr.unique = m->hdr->unique;
@@ -252,7 +255,7 @@ void
 replyfuseerrno(FuseMsg *m, int e)
 {
 	struct fuse_out_header hdr;
-	
+
 	hdr.len = sizeof hdr;
 	hdr.error = -e;	/* FUSE sends negative errnos. */
 	hdr.unique = m->hdr->unique;
@@ -304,12 +307,12 @@ initfuse(char *mtpt)
 	/*
 	 * Complain if the kernel is too new.
 	 * We could forge ahead, but at least the one time I tried,
-	 * the kernel rejected the newer version by making the 
+	 * the kernel rejected the newer version by making the
 	 * writev fail in replyfuse, which is a much more confusing
-	 * error message.  In the future, might be nice to try to 
+	 * error message.  In the future, might be nice to try to
 	 * support older versions that differ only slightly.
 	 */
-	if(tx->major < FUSE_KERNEL_VERSION 
+	if(tx->major < FUSE_KERNEL_VERSION
 	|| (tx->major == FUSE_KERNEL_VERSION && tx->minor < FUSE_KERNEL_MINOR_VERSION))
 		sysfatal("fuse: too kernel version %d.%d older than program version %d.%d",
 			tx->major, tx->minor, FUSE_KERNEL_VERSION, FUSE_KERNEL_MINOR_VERSION);
@@ -383,7 +386,7 @@ fusefmt(Fmt *fmt)
 			}
 			case FUSE_SYMLINK: {
 				char *old, *new;
-				
+
 				old = a;
 				new = a + strlen(a) + 1;
 				fmtprint(fmt, "Symlink nodeid %#llux old %#q new %#q",
@@ -452,7 +455,7 @@ fusefmt(Fmt *fmt)
 			case FUSE_RELEASE: {
 				struct fuse_release_in *tx = a;
 				fmtprint(fmt, "Release nodeid %#llux fh %#llux flags %#ux",
-					hdr->nodeid, tx->fh, tx->flags); 
+					hdr->nodeid, tx->fh, tx->flags);
 				break;
 			}
 			case FUSE_FSYNC: {
@@ -513,7 +516,7 @@ fusefmt(Fmt *fmt)
 			case FUSE_RELEASEDIR: {
 				struct fuse_release_in *tx = a;
 				fmtprint(fmt, "Releasedir nodeid %#llux fh %#llux flags %#ux",
-					hdr->nodeid, tx->fh, tx->flags); 
+					hdr->nodeid, tx->fh, tx->flags);
 				break;
 			}
 			case FUSE_FSYNCDIR: {
@@ -551,7 +554,7 @@ fusefmt(Fmt *fmt)
 			case FUSE_LOOKUP: {
 				/*
 				 * For a negative entry, can send back ENOENT
-				 * or rx->ino == 0.  
+				 * or rx->ino == 0.
 				 * In protocol version 7.4 and before, can only use
 				 * the ENOENT method.
 				 * Presumably the benefit of sending rx->ino == 0
@@ -568,7 +571,7 @@ fusefmt(Fmt *fmt)
 					rx->attr_valid+rx->attr_valid_nsec*1e-9);
 				fmtprint(fmt, " ino %#llux size %lld blocks %lld atime %.20g mtime %.20g ctime %.20g mode %#uo nlink %d uid %d gid %d rdev %#ux",
 					rx->attr.ino, rx->attr.size, rx->attr.blocks,
-					rx->attr.atime+rx->attr.atimensec*1e-9, 
+					rx->attr.atime+rx->attr.atimensec*1e-9,
 					rx->attr.mtime+rx->attr.mtimensec*1e-9,
 					rx->attr.ctime+rx->attr.ctimensec*1e-9,
 					rx->attr.mode, rx->attr.nlink, rx->attr.uid,
@@ -589,7 +592,7 @@ fusefmt(Fmt *fmt)
 					rx->attr_valid+rx->attr_valid_nsec*1e-9);
 				fmtprint(fmt, " ino %#llux size %lld blocks %lld atime %.20g mtime %.20g ctime %.20g mode %#uo nlink %d uid %d gid %d rdev %#ux",
 					rx->attr.ino, rx->attr.size, rx->attr.blocks,
-					rx->attr.atime+rx->attr.atimensec*1e-9, 
+					rx->attr.atime+rx->attr.atimensec*1e-9,
 					rx->attr.mtime+rx->attr.mtimensec*1e-9,
 					rx->attr.ctime+rx->attr.ctimensec*1e-9,
 					rx->attr.mode, rx->attr.nlink, rx->attr.uid,
@@ -730,7 +733,7 @@ fusefmt(Fmt *fmt)
 					rx->e.attr_valid+rx->e.attr_valid_nsec*1e-9);
 				fmtprint(fmt, " ino %#llux size %lld blocks %lld atime %.20g mtime %.20g ctime %.20g mode %#uo nlink %d uid %d gid %d rdev %#ux",
 					rx->e.attr.ino, rx->e.attr.size, rx->e.attr.blocks,
-					rx->e.attr.atime+rx->e.attr.atimensec*1e-9, 
+					rx->e.attr.atime+rx->e.attr.atimensec*1e-9,
 					rx->e.attr.mtime+rx->e.attr.mtimensec*1e-9,
 					rx->e.attr.ctime+rx->e.attr.ctimensec*1e-9,
 					rx->e.attr.mode, rx->e.attr.nlink, rx->e.attr.uid,
@@ -750,7 +753,7 @@ fusefmt(Fmt *fmt)
 
 /*
  * Mounts a fuse file system on mtpt and returns
- * a file descriptor for the corresponding fuse 
+ * a file descriptor for the corresponding fuse
  * message conversation.
  */
 int
@@ -759,7 +762,7 @@ mountfuse(char *mtpt)
 #if defined(__linux__)
 	int p[2], pid, fd;
 	char buf[20];
-	
+
 	if(socketpair(AF_UNIX, SOCK_STREAM, 0, p) < 0)
 		return -1;
 	pid = fork();
@@ -780,11 +783,11 @@ mountfuse(char *mtpt)
 #elif defined(__FreeBSD__) && !defined(__APPLE__)
 	int pid, fd;
 	char buf[20];
-	
+
 	if((fd = open("/dev/fuse", ORDWR)) < 0)
 		return -1;
 	snprint(buf, sizeof buf, "%d", fd);
-	
+
 	pid = fork();
 	if(pid < 0)
 		return -1;
@@ -795,14 +798,23 @@ mountfuse(char *mtpt)
 	}
 	return fd;
 #elif defined(__APPLE__)
-	int i, pid, fd, r;
+	int i, pid, fd, r, p[2];
 	char buf[20];
 	struct vfsconf vfs;
 	char *f, *v;
-	
-	if(getvfsbyname(v="osxfusefs", &vfs) < 0 && getvfsbyname(v="fusefs", &vfs) < 0){
+
+	if(getvfsbyname(v="osxfusefs", &vfs) < 0 &&
+	   getvfsbyname(v="macfuse", &vfs) < 0 &&
+	   getvfsbyname(v="osxfuse", &vfs) < 0 &&
+	   getvfsbyname(v="fusefs", &vfs) < 0){
 		if(access((v="osxfusefs", f="/Library/Filesystems/osxfusefs.fs"
 			"/Support/load_osxfusefs"), 0) < 0 &&
+		   access((v="macfuse", f="/Library/Filesystems/macfuse.fs"
+			"/Contents/Resources/load_macfuse"), 0) < 0 &&
+		   access((v="osxfuse", f="/Library/Filesystems/osxfuse.fs"
+			"/Contents/Resources/load_osxfuse"), 0) < 0 &&
+		   access((v="osxfuse", f="/opt/local/Library/Filesystems/osxfuse.fs"
+			"/Contents/Resources/load_osxfuse"), 0) < 0 &&
 		   access((v="fusefs", f="/System/Library/Extensions/fusefs.kext"
 			"/Contents/Resources/load_fusefs"), 0) < 0 &&
 		   access(f="/Library/Extensions/fusefs.kext"
@@ -827,10 +839,46 @@ mountfuse(char *mtpt)
 			return -1;
 		}
 	}
-	
+
+	/* MacFUSE >=4 dropped support for passing fd */
+	if (strcmp(v, "macfuse") == 0) {
+		if(socketpair(AF_UNIX, SOCK_STREAM, 0, p) < 0)
+			return -1;
+		pid = fork();
+		if(pid < 0)
+			return -1;
+		if(pid == 0){
+			close(p[1]);
+			snprint(buf, sizeof buf, "%d", p[0]);
+			putenv("_FUSE_COMMFD", buf);
+			putenv("_FUSE_COMMVERS", "2");
+			putenv("_FUSE_CALL_BY_LIB", "1");
+			putenv("_FUSE_DAEMON_PATH",
+				"/Library/Filesystems/macfuse.fs/Contents/Resources/mount_macfus");
+			execl("/Library/Filesystems/macfuse.fs/Contents/Resources/mount_macfuse",
+				"mount_macfuse", mtpt, nil);
+			fprint(2, "exec mount_macfuse: %r\n");
+			_exit(1);
+		}
+		close(p[0]);
+		fd = recvfd(p[1]);
+		close(p[1]);
+		return fd;
+	}
+
 	/* Look for available FUSE device. */
+	/*
+	 * We need to truncate `fs` from the end of the vfs name if
+	 * it's present
+	 */
+	int len;
+	if (strcmp(v, "osxfuse") == 0) {
+		len = strlen(v);
+	} else {
+		len = strlen(v)-2;
+	}
 	for(i=0;; i++){
-		snprint(buf, sizeof buf, "/dev/%.*s%d", strlen(v)-2, v, i);
+		snprint(buf, sizeof buf, "/dev/%.*s%d", len, v, i);
 		if(access(buf, 0) < 0){
 			werrstr("no available fuse devices");
 			return -1;
@@ -844,12 +892,25 @@ mountfuse(char *mtpt)
 		return -1;
 	if(pid == 0){
 		snprint(buf, sizeof buf, "%d", fd);
+		/* OSXFUSE >=3.3 changed the name of the environment variable, set both */
 		putenv("MOUNT_FUSEFS_CALL_BY_LIB", "");
+		putenv("MOUNT_OSXFUSE_CALL_BY_LIB", "");
 		/*
-		 * Different versions of MacFUSE put the
-		 * mount_fusefs binary in different places.
-		 * Try all.
+		 * Different versions of OSXFUSE and MacFUSE put the
+		 * mount_fusefs binary in different places.  Try all.
 		 */
+		/*  OSXFUSE >=3.3  greater location */
+		putenv("MOUNT_OSXFUSE_DAEMON_PATH",
+			   "/Library/Filesystems/osxfuse.fs/Contents/Resources/mount_osxfuse");
+		execl("/Library/Filesystems/osxfuse.fs/Contents/Resources/mount_osxfuse",
+			  "mount_osxfuse", buf, mtpt, nil);
+
+		/* OSXFUSE >=3.3 from macports */
+		putenv("MOUNT_OSXFUSE_DAEMON_PATH",
+			"/opt/local/Library/Filesystems/osxfuse.fs/Contents/Resources/mount_osxfuse");
+		execl("/opt/local/Library/Filesystems/osxfuse.fs/Contents/Resources/mount_osxfuse",
+			"mount_osxfuse", buf, mtpt, nil);
+
 		/* Lion OSXFUSE location */
 		putenv("MOUNT_FUSEFS_DAEMON_PATH",
 			   "/Library/Filesystems/osxfusefs.fs/Support/mount_osxfusefs");
@@ -871,7 +932,7 @@ mountfuse(char *mtpt)
 		_exit(1);
 	}
 	return fd;
-	
+
 #else
 	werrstr("cannot mount fuse on this system");
 	return -1;

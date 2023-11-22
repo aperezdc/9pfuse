@@ -8,7 +8,7 @@
 #undef wait
 
 static int sigpid;
-static int threadpassfd;
+static int threadpassfd = -1;
 static int gotsigchld;
 
 static void
@@ -66,13 +66,13 @@ sigpass(int sig)
 		kill(sigpid, sig);
 }
 
-static int sigs[] = 
+static int sigs[] =
 {
 	SIGHUP, SIGINT, SIGQUIT, SIGILL,
 	SIGTRAP, SIGABRT, SIGBUS, SIGFPE,
 	SIGUSR1, SIGSEGV, SIGUSR2, SIGPIPE,
 	SIGALRM, SIGTERM, SIGCHLD, SIGSTOP,
-	/*SIGTSTP, SIGTTIN, SIGTTOU,*/ SIGURG, 
+	/*SIGTSTP, SIGTTIN, SIGTTOU,*/ SIGURG,
 	SIGXCPU, SIGXFSZ, SIGVTALRM, SIGPROF,
 #ifdef SIGWINCH
 	SIGWINCH,
@@ -84,7 +84,7 @@ static int sigs[] =
 	SIGEMT,
 #endif
 #ifdef SIGPWR
-	SIGPWR, 
+	SIGPWR,
 #endif
 #ifdef SIGINFO
 	SIGINFO,
@@ -100,6 +100,13 @@ _threadsetupdaemonize(void)
 	char buf[20];
 
 	sigpid = 1;
+
+	/*
+	 * We've been told this program is likely to background itself.
+	 * Put it in its own process group so that we don't get a SIGHUP
+	 * when the parent exits.
+	 */
+	setpgid(0, 0);
 
 	if(pipe(p) < 0)
 		sysfatal("passer pipe: %r");
@@ -163,9 +170,9 @@ _threadsetupdaemonize(void)
 void
 _threaddaemonize(void)
 {
-	if(threadpassfd >= 0){
-		write(threadpassfd, "0", 1);
-		close(threadpassfd);
-		threadpassfd = -1;
-	}
+	if(threadpassfd < 0)
+		sysfatal("threads in main proc exited w/o threadmaybackground");
+	write(threadpassfd, "0", 1);
+	close(threadpassfd);
+	threadpassfd = -1;
 }

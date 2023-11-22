@@ -1,6 +1,6 @@
 #include "threadimpl.h"
 
-int	_threaddebuglevel;
+int	_threaddebuglevel = 0;
 
 static	uint		threadnproc;
 static	uint		threadnsysproc;
@@ -15,16 +15,18 @@ static	void		delthread(_Threadlist*, _Thread*);
 static	int		onlist(_Threadlist*, _Thread*);
 static	void		addthreadinproc(Proc*, _Thread*);
 static	void		delthreadinproc(Proc*, _Thread*);
-static	void		contextswitch(Context *from, Context *to);
-static	void		procscheduler(Proc*);
+static	void		procmain(Proc*);
 static	int		threadinfo(void*, char*);
+static 	void		pthreadscheduler(Proc *p);
+static	void		pthreadsleepschedlocked(Proc *p, _Thread *t);
+static	void		pthreadwakeupschedlocked(Proc *p, _Thread *self, _Thread *t);
+static	_Thread*	procnext(Proc*, _Thread*);
 
 static void
-_threaddebug(char *fmt, ...)
+_threaddebug(_Thread *t, char *fmt, ...)
 {
 	va_list arg;
 	char buf[128];
-	_Thread *t;
 	char *p;
 	static int fd = -1;
 
@@ -50,11 +52,12 @@ _threaddebug(char *fmt, ...)
 	va_start(arg, fmt);
 	vsnprint(buf, sizeof buf, fmt, arg);
 	va_end(arg);
-	t = proc()->thread;
+	if(t == nil)
+		t = proc()->thread;
 	if(t)
-		fprint(fd, "%d.%d: %s\n", getpid(), t->id, buf);
+		fprint(fd, "%p %d.%d: %s\n", proc(), getpid(), t->id, buf);
 	else
-		fprint(fd, "%d._: %s\n", getpid(), buf);
+		fprint(fd, "%p %d._: %s\n", proc(), getpid(), buf);
 }
 
 static _Thread*
@@ -80,95 +83,26 @@ procalloc(void)
 	return p;
 }
 
-static void
-threadstart(uint y, uint x)
-{
-	_Thread *t;
-	ulong z;
-
-//print("threadstart\n");
-	z = (ulong)x << 16;	/* hide undefined 32-bit shift from 32-bit compilers */
-	z <<= 16;
-	z |= y;
-	t = (_Thread*)z;
-
-//print("threadstart sp=%p arg=%p startfn=%p t=%p\n", &t, t, t->startfn, t->startarg);
-	t->startfn(t->startarg);
-/*print("threadexits %p\n", v); */
-	threadexits(nil);
-/*print("not reacehd\n"); */
-}
-
-static _Thread*
-threadalloc(void (*fn)(void*), void *arg, uint stack)
-{
-	_Thread *t;
-	sigset_t zero;
-	uint x, y;
-	ulong z;
-
-	/* allocate the task and stack together */
-	t = malloc(sizeof *t+stack);
-	if(t == nil)
-		sysfatal("threadalloc malloc: %r");
-	memset(t, 0, sizeof *t);
-	t->stk = (uchar*)(t+1);
-	t->stksize = stack;
-	t->id = incref(&threadidref);
-//print("fn=%p arg=%p\n", fn, arg);
-	t->startfn = fn;
-	t->startarg = arg;
-//print("makecontext sp=%p t=%p startfn=%p\n", (char*)t->stk+t->stksize, t, t->startfn);
-
-	/* do a reasonable initialization */
-	memset(&t->context.uc, 0, sizeof t->context.uc);
-	sigemptyset(&zero);
-	sigprocmask(SIG_BLOCK, &zero, &t->context.uc.uc_sigmask);
-//print("makecontext sp=%p t=%p startfn=%p\n", (char*)t->stk+t->stksize, t, t->startfn);
-
-	/* must initialize with current context */
-	if(getcontext(&t->context.uc) < 0)
-		sysfatal("threadalloc getcontext: %r");
-//print("makecontext sp=%p t=%p startfn=%p\n", (char*)t->stk+t->stksize, t, t->startfn);
-
-	/* call makecontext to do the real work. */
-	/* leave a few words open on both ends */
-	t->context.uc.uc_stack.ss_sp = (void*)(t->stk+8);
-	t->context.uc.uc_stack.ss_size = t->stksize-64;
-#if defined(__sun__) && !defined(__MAKECONTEXT_V2_SOURCE)		/* sigh */
-	/* can avoid this with __MAKECONTEXT_V2_SOURCE but only on SunOS 5.9 */
-	t->context.uc.uc_stack.ss_sp = 
-		(char*)t->context.uc.uc_stack.ss_sp
-		+t->context.uc.uc_stack.ss_size;
-#endif
-	/*
-	 * All this magic is because you have to pass makecontext a
-	 * function that takes some number of word-sized variables,
-	 * and on 64-bit machines pointers are bigger than words.
-	 */
-//print("makecontext sp=%p t=%p startfn=%p\n", (char*)t->stk+t->stksize, t, t->startfn);
-	z = (ulong)t;
-	y = z;
-	z >>= 16;	/* hide undefined 32-bit shift from 32-bit compilers */
-	x = z>>16;
-	makecontext(&t->context.uc, (void(*)(void))threadstart, 2, y, x);
-
-	return t;
-}
-
 _Thread*
 _threadcreate(Proc *p, void (*fn)(void*), void *arg, uint stack)
 {
 	_Thread *t;
 
-	/* defend against bad C libraries */
-	if(stack < (256<<10))
-		stack = 256<<10;
-	
-	t = threadalloc(fn, arg, stack);
+	USED(stack);
+	t = malloc(sizeof *t);
+	if(t == nil)
+		sysfatal("threadcreate malloc: %r");
+	memset(t, 0, sizeof *t);
+	t->id = incref(&threadidref);
+	t->startfn = fn;
+	t->startarg = arg;
 	t->proc = p;
-	addthreadinproc(p, t);
+	if(p->nthread != 0)
+		_threadpthreadstart(p, t);
+	else
+		t->mainthread = 1;
 	p->nthread++;
+	addthreadinproc(p, t);
 	_threadready(t);
 	return t;
 }
@@ -179,6 +113,7 @@ threadcreate(void (*fn)(void*), void *arg, uint stack)
 	_Thread *t;
 
 	t = _threadcreate(proc(), fn, arg, stack);
+	_threaddebug(nil, "threadcreate %d", t->id);
 	return t->id;
 }
 
@@ -192,7 +127,8 @@ proccreate(void (*fn)(void*), void *arg, uint stack)
 	p = procalloc();
 	t = _threadcreate(p, fn, arg, stack);
 	id = t->id;	/* t might be freed after _procstart */
-	_procstart(p, procscheduler);
+	_threaddebug(t, "proccreate %p", p);
+	_procstart(p, procmain);
 	return id;
 }
 
@@ -204,7 +140,7 @@ _threadswitch(void)
 	needstack(0);
 	p = proc();
 /*print("threadswtch %p\n", p); */
-	contextswitch(&p->thread->context, &p->schedcontext);
+	pthreadscheduler(p);
 }
 
 void
@@ -228,7 +164,7 @@ threadidle(void)
 {
 	int n;
 	Proc *p;
-	
+
 	p = proc();
 	n = p->nswitch;
 	lock(&p->lock);
@@ -303,101 +239,152 @@ threadsysfatal(char *fmt, va_list arg)
 }
 
 static void
-contextswitch(Context *from, Context *to)
-{
-	if(swapcontext(&from->uc, &to->uc) < 0){
-		fprint(2, "swapcontext failed: %r\n");
-		assert(0);
-	}
-}
-
-static void
-procscheduler(Proc *p)
+procmain(Proc *p)
 {
 	_Thread *t;
 
-	setproc(p);
-	_threaddebug("scheduler enter");
-//print("s %p\n", p);
+	_threadsetproc(p);
+
+	/* take out first thread to run on system stack */
+	t = p->runqueue.head;
+	delthread(&p->runqueue, t);
+
+	/* run it */
+	p->thread = t;
+	t->startfn(t->startarg);
+	if(p->nthread != 0)
+		threadexits(nil);
+}
+
+void
+_threadpthreadmain(Proc *p, _Thread *t)
+{
+	_threadsetproc(p);
 	lock(&p->lock);
-	for(;;){
-		if((t = p->pinthread) != nil){
-			while(!onlist(&p->runqueue, t)){
-				p->runrend.l = &p->lock;
-				_threaddebug("scheduler sleep (pin)");
-				_procsleep(&p->runrend);
-				_threaddebug("scheduler wake (pin)");
-			}
-		}else
-		while((t = p->runqueue.head) == nil){
-			if(p->nthread == 0)
-				goto Out;
-			if((t = p->idlequeue.head) != nil){
-				/*
-				 * Run all the idling threads once.
-				 */
-				while((t = p->idlequeue.head) != nil){
-					delthread(&p->idlequeue, t);
-					addthread(&p->runqueue, t);
-				}
-				continue;
-			}
-			p->runrend.l = &p->lock;
-			_threaddebug("scheduler sleep");
-			_procsleep(&p->runrend);
-			_threaddebug("scheduler wake");
-		}
-		if(p->pinthread && p->pinthread != t)
-			fprint(2, "p->pinthread %p t %p\n", p->pinthread, t);
-		assert(p->pinthread == nil || p->pinthread == t);
-		delthread(&p->runqueue, t);
-		unlock(&p->lock);
-		p->thread = t;
-		p->nswitch++;
-		_threaddebug("run %d (%s)", t->id, t->name);
-//print("run %p %p %p %p\n", t, *(uintptr*)(t->context.uc.mc.sp), t->context.uc.mc.di, t->context.uc.mc.si);
-		contextswitch(&p->schedcontext, &t->context);
-/*print("back in scheduler\n"); */
-		p->thread = nil;
-		lock(&p->lock);
-		if(t->exiting){
-			delthreadinproc(p, t);
-			p->nthread--;
-/*print("nthread %d\n", p->nthread); */
-			free(t);
-		}
-	}
-
-Out:
-	_threaddebug("scheduler exit");
-	if(p->mainproc){
-		/*
-		 * Stupid bug - on Linux 2.6 and maybe elsewhere,
-		 * if the main thread exits then the others keep running
-		 * but the process shows up as a zombie in ps and is not
-		 * attachable with ptrace.  We'll just sit around pretending
-		 * to be a system proc instead of exiting.
-		 */
-		_threaddaemonize();
-		lock(&threadnproclock);
-		if(++threadnsysproc == threadnproc)
-			threadexitsall(p->msg);
-		p->sysproc = 1;
-		unlock(&threadnproclock);
-		for(;;)
-		 	sleep(1000);
-	}
-
-	delproc(p);
-	lock(&threadnproclock);
-	if(p->sysproc)
-		--threadnsysproc;
-	if(--threadnproc == threadnsysproc)
-		threadexitsall(p->msg);
-	unlock(&threadnproclock);
+	pthreadsleepschedlocked(p, t);
 	unlock(&p->lock);
+	_threaddebug(nil, "startfn");
+	t->startfn(t->startarg);
+	threadexits(nil);
+}
+
+static void
+pthreadsleepschedlocked(Proc *p, _Thread *t)
+{
+	_threaddebug(t, "pthreadsleepsched %p %d", p, t->id);;
+	t->schedrend.l = &p->lock;
+	while(p->schedthread != t)
+		_procsleep(&t->schedrend);
+}
+
+static void
+pthreadwakeupschedlocked(Proc *p, _Thread *self, _Thread *t)
+{
+	_threaddebug(self, "pthreadwakeupschedlocked %p %d", p, t->id);;
+	t->schedrend.l = &p->lock;
+	p->schedthread = t;
+	_procwakeup(&t->schedrend);
+}
+
+static void
+pthreadscheduler(Proc *p)
+{
+	_Thread *self, *t;
+
+	_threaddebug(nil, "scheduler");
+	lock(&p->lock);
+	self = p->thread;
+	p->thread = nil;
+	_threaddebug(self, "pausing");
+
+	if(self->exiting) {
+		_threaddebug(self, "exiting");
+		delthreadinproc(p, self);
+		p->nthread--;
+	}
+
+	t = procnext(p, self);
+	if(t != nil) {
+		pthreadwakeupschedlocked(p, self, t);
+		if(!self->exiting) {
+			pthreadsleepschedlocked(p, self);
+			_threaddebug(nil, "resume %d", self->id);
+			unlock(&p->lock);
+			return;
+		}
+	}
+
+	if(t == nil) {
+		/* Tear down proc bookkeeping. Wait to free p. */
+		delproc(p);
+		lock(&threadnproclock);
+		if(p->sysproc)
+			--threadnsysproc;
+		if(--threadnproc == threadnsysproc)
+			threadexitsall(p->msg);
+		unlock(&threadnproclock);
+	}
+
+	/* Tear down pthread. */
+	if(self->mainthread && p->mainproc) {
+		_threaddaemonize();
+		_threaddebug(self, "sleeper");
+		unlock(&p->lock);
+		/*
+		 * Avoid bugs with main pthread exiting.
+		 * When all procs are gone, threadexitsall above will happen.
+		 */
+		for(;;)
+			sleep(60*60*1000);
+	}
 	_threadsetproc(nil);
-	free(p);
+	free(self);
+	unlock(&p->lock);
+	if(t == nil)
+		free(p);
+	_threadpexit();
+}
+
+static _Thread*
+procnext(Proc *p, _Thread *self)
+{
+	_Thread *t;
+
+	if((t = p->pinthread) != nil){
+		while(!onlist(&p->runqueue, t)){
+			p->runrend.l = &p->lock;
+			_threaddebug(self, "scheduler sleep (pin)");
+			_procsleep(&p->runrend);
+			_threaddebug(self, "scheduler wake (pin)");
+		}
+	} else
+	while((t = p->runqueue.head) == nil){
+		if(p->nthread == 0)
+			return nil;
+		if((t = p->idlequeue.head) != nil){
+			/*
+			 * Run all the idling threads once.
+			 */
+			while((t = p->idlequeue.head) != nil){
+				delthread(&p->idlequeue, t);
+				addthread(&p->runqueue, t);
+			}
+			continue;
+		}
+		p->runrend.l = &p->lock;
+		_threaddebug(self, "scheduler sleep");
+		_procsleep(&p->runrend);
+		_threaddebug(self, "scheduler wake");
+	}
+
+	if(p->pinthread && p->pinthread != t)
+		fprint(2, "p->pinthread %p t %p\n", p->pinthread, t);
+	assert(p->pinthread == nil || p->pinthread == t);
+	delthread(&p->runqueue, t);
+
+	p->thread = t;
+	p->nswitch++;
+	return t;
 }
 
 void
@@ -466,7 +453,7 @@ int
 threadid(void)
 {
 	_Thread *t;
-	
+
 	t = proc()->thread;
 	return t->id;
 }
@@ -477,6 +464,8 @@ needstack(int n)
 	_Thread *t;
 
 	t = proc()->thread;
+	if(t->stk == nil)
+		return;
 
 	if((char*)&t <= (char*)t->stk
 	|| (char*)&t - (char*)t->stk < 256+n){
@@ -502,6 +491,10 @@ threadqlock(QLock *l, int block, ulong pc)
 	if(l->owner == nil){
 		l->owner = (*threadnow)();
 /*print("qlock %p @%#x by %p\n", l, pc, l->owner); */
+		if(l->owner == nil) {
+			fprint(2, "%s: qlock uncontended owner=nil oops\n", argv0);
+			abort();
+		}
 		unlock(&l->l);
 		return 1;
 	}
@@ -526,6 +519,11 @@ threadqlock(QLock *l, int block, ulong pc)
 			argv0, pc, l->owner, (*threadnow)());
 		abort();
 	}
+	if(l->owner == nil) {
+		fprint(2, "%s: qlock threadswitch owner=nil oops\n", argv0);
+		abort();
+	}
+
 /*print("qlock wakeup %p @%#x by %p\n", l, pc, (*threadnow)()); */
 	return 1;
 }
@@ -534,7 +532,7 @@ static void
 threadqunlock(QLock *l, ulong pc)
 {
 	_Thread *ready;
-	
+
 	lock(&l->l);
 /*print("qlock unlock %p @%#x by %p (owner %p)\n", l, pc, (*threadnow)(), l->owner); */
 	if(l->owner == 0){
@@ -578,7 +576,7 @@ threadrlock(RWLock *l, int block, ulong pc)
 	addthread(&l->rwaiting, (*threadnow)());
 	unlock(&l->l);
 	_threadswitch();
-	return 1;	
+	return 1;
 }
 
 static int
@@ -671,14 +669,18 @@ threadrwakeup(Rendez *r, int all, ulong pc)
 	int i;
 	_Thread *t;
 
+	_threaddebug(nil, "rwakeup %p %d", r, all);
 	for(i=0;; i++){
 		if(i==1 && !all)
 			break;
 		if((t = r->waiting.head) == nil)
 			break;
+		_threaddebug(nil, "rwakeup %p %d -> wake %d", r, all, t->id);
 		delthread(&r->waiting, t);
-		_threadready(t);	
+		_threadready(t);
+		_threaddebug(nil, "rwakeup %p %d -> loop", r, all);
 	}
+	_threaddebug(nil, "rwakeup %p %d -> total %d", r, all, i);
 	return i;
 }
 
@@ -714,10 +716,16 @@ int
 main(int argc, char **argv)
 {
 	Proc *p;
+	_Thread *t;
+	char *opts;
 
 	argv0 = argv[0];
 
-	if(getenv("NOLIBTHREADDAEMONIZE") == nil)
+	opts = getenv("LIBTHREAD");
+	if(opts == nil)
+		opts = "";
+
+	if(threadmaybackground() && strstr(opts, "nodaemon") == nil && getenv("NOLIBTHREADDAEMONIZE") == nil)
 		_threadsetupdaemonize();
 
 	threadargc = argc;
@@ -748,9 +756,10 @@ main(int argc, char **argv)
 	if(mainstacksize == 0)
 		mainstacksize = 256*1024;
 	atnotify(threadinfo, 1);
-	_threadcreate(p, threadmainstart, nil, mainstacksize);
-	procscheduler(p);
-	sysfatal("procscheduler returned in threadmain!");
+	t = _threadcreate(p, threadmainstart, nil, mainstacksize);
+	t->mainthread = 1;
+	procmain(p);
+	sysfatal("procmain returned in libthread");
 	/* does not return */
 	return 0;
 }
@@ -865,7 +874,7 @@ delproc(Proc *p)
 	unlock(&_threadprocslock);
 }
 
-/* 
+/*
  * notify - for now just use the usual mechanisms
  */
 void
@@ -901,14 +910,12 @@ threadinfo(void *v, char *s)
 		fprint(2, "proc %p %s%s\n", (void*)p->osprocid, p->msg,
 			p->sysproc ? " (sysproc)": "");
 		for(t=p->allthreads.head; t; t=t->allnext){
-			fprint(2, "\tthread %d %s: %s %s\n", 
-				t->id, 
-				t == p->thread ? "Running" : 
+			fprint(2, "\tthread %d %s: %s %s\n",
+				t->id,
+				t == p->thread ? "Running" :
 				onrunqueue(p, t) ? "Ready" : "Sleeping",
 				t->state, t->name);
 		}
 	}
 	return 1;
 }
-
-
