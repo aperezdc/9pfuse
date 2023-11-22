@@ -5,7 +5,7 @@ project('9pfuse', 'c',
     'b_ndebug=if-release',
     'c_std=c11',
   ],
-  version: '1',
+  version: '2',
 )
 
 add_project_arguments('-DPLAN9_TARGET="@0@"'.format(get_option('prefix')), language: 'c')
